@@ -1,5 +1,6 @@
 
-![CrowdStrikeAIDTimeliner](https://github.com/user-attachments/assets/ab8d2994-6ff8-4288-a9c5-f28eb12a2d63)
+![CrowdStrikeAIDTimeliner](https://github.com/user-attachments/assets/ab8d2994-6ff8-4288-a9c5-f28eb12a2d63) <img width="519" height="290" alt="image" src="https://github.com/user-attachments/assets/faa4b5bb-167f-45f4-8157-db08953f26f2" />
+
 
 # CrowdStrike-AID-Timeliner - CrowdStrike Device Investigator
 
