@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""
+FalconAID - CrowdStrike Device Investigator
+Secure AID lookup tool with system keyring storage
+"""
+
+import os
+import sys
+import json
+import time
+import base64
+import hashlib
+import webbrowser
+import platform
+import uuid
+import getpass
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import requests
+
+try:
+    import keyring
+except ImportError:
+    print("Error: keyring module not installed. Install with: pip install keyring")
+    sys.exit(1)
+
+print("\nFalconAID - Developed by Jacob Wilson")
+print("dfirvault@gmail.com\n")
+
+class SystemIdentity:
+    """Generates unique system-based identity for key derivation"""
+    
+    @staticmethod
+    def get_system_fingerprint():
+        """Create a unique fingerprint for this system"""
+        try:
+            # Combine multiple system identifiers
+            system_info = {
+                'machine_id': platform.machine(),
+                'node': platform.node(),
+                'processor': platform.processor(),
+                'system': platform.system(),
+                'release': platform.release(),
+            }
+            
+            # Get machine-specific ID where available
+            if platform.system() == "Windows":
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                        machine_guid = winreg.QueryValueEx(key, "MachineGuid")[0]
+                        system_info['machine_guid'] = machine_guid
+                except:
+                    system_info['machine_guid'] = str(uuid.getnode())
+            else:
+                # Linux/Mac - use machine-id or fallback
+                try:
+                    with open('/etc/machine-id', 'r') as f:
+                        system_info['machine_id'] = f.read().strip()
+                except:
+                    system_info['machine_id'] = str(uuid.getnode())
+            
+            fingerprint = hashlib.sha256(json.dumps(system_info, sort_keys=True).encode()).hexdigest()
+            return fingerprint[:32]  # Return first 32 chars for consistent length
+            
+        except Exception as e:
+            # Fallback to basic fingerprint
+            fallback = f"{platform.node()}-{platform.system()}-{uuid.getnode()}"
+            return hashlib.sha256(fallback.encode()).hexdigest()[:32]
+
+class SecureConfigManager:
+    """Manages secure configuration storage using system keyring"""
+    
+    SERVICE_NAME = "FalconAID"
+    CONFIG_KEY = "encrypted_config"
+    SALT_KEY = "system_salt"
+    
+    def __init__(self):
+        self.system_fingerprint = SystemIdentity.get_system_fingerprint()
+        self.salt = self._get_or_create_salt()
+        self.master_key = self._derive_master_key()
+    
+    def _get_or_create_salt(self):
+        """Get existing salt or create new one"""
+        salt = keyring.get_password(self.SERVICE_NAME, self.SALT_KEY)
+        
+        if not salt:
+            # Generate new random salt
+            salt = base64.urlsafe_b64encode(os.urandom(32)).decode()
+            keyring.set_password(self.SERVICE_NAME, self.SALT_KEY, salt)
+            print("[+] Generated new system-specific encryption salt")
+        
+        return salt.encode()
+    
+    def _derive_master_key(self, user_secret=None):
+        """Derive master key from system fingerprint and optional user secret"""
+        # Use system fingerprint as base
+        base_key = self.system_fingerprint.encode()
+        
+        # If user provides a secret, combine it
+        if user_secret:
+            base_key += user_secret.encode()
+        
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=self.salt,
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(base_key))
+    
+    def _get_cipher(self, user_secret=None):
+        """Get Fernet cipher instance"""
+        key = self._derive_master_key(user_secret)
+        return Fernet(key)
+    
+    def config_exists(self):
+        """Check if configuration exists"""
+        return keyring.get_password(self.SERVICE_NAME, self.CONFIG_KEY) is not None
+    
+    def save_config(self, config_data, user_secret=None):
+        """Encrypt and save configuration to keyring"""
+        cipher = self._get_cipher(user_secret)
+        config_json = json.dumps(config_data)
+        encrypted_config = cipher.encrypt(config_json.encode())
+        encrypted_b64 = base64.urlsafe_b64encode(encrypted_config).decode()
+        
+        keyring.set_password(self.SERVICE_NAME, self.CONFIG_KEY, encrypted_b64)
+        return True
+    
+    def load_config(self, user_secret=None):
+        """Load and decrypt configuration from keyring"""
+        encrypted_b64 = keyring.get_password(self.SERVICE_NAME, self.CONFIG_KEY)
+        if not encrypted_b64:
+            return None
+        
+        try:
+            cipher = self._get_cipher(user_secret)
+            encrypted_config = base64.urlsafe_b64decode(encrypted_b64.encode())
+            config_json = cipher.decrypt(encrypted_config).decode()
+            return json.loads(config_json)
+        except Exception as e:
+            print(f"[!] Failed to decrypt configuration: {e}")
+            return None
+    
+    def clear_config(self):
+        """Clear stored configuration"""
+        try:
+            keyring.delete_password(self.SERVICE_NAME, self.CONFIG_KEY)
+            keyring.delete_password(self.SERVICE_NAME, self.SALT_KEY)
+            return True
+        except Exception as e:
+            print(f"[!] Error clearing configuration: {e}")
+            return False
+
+class CrowdStrikeAPI:
+    """CrowdStrike API wrapper for AID lookup"""
+    
+    def __init__(self, client_id: str, client_secret: str, base_url: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.base_url = base_url.rstrip('/')
+        self.token = None
+        self.token_expiry = None
+        
+    def authenticate(self) -> bool:
+        """Authenticate with CrowdStrike API"""
+        try:
+            url = f"{self.base_url}/oauth2/token"
+            data = {
+                'client_id': self.client_id,
+                'client_secret': self.client_secret
+            }
+            response = requests.post(url, data=data, timeout=30)
+            
+            if response.status_code == 201:
+                result = response.json()
+                self.token = result['access_token']
+                self.token_expiry = time.time() + result.get('expires_in', 1799)
+                return True
+            return False
+        except Exception as e:
+            print(f"Authentication error: {e}")
+            return False
+    
+    def get_headers(self) -> dict:
+        """Get API headers with current token"""
+        if not self.token or time.time() >= self.token_expiry:
+            if not self.authenticate():
+                raise Exception("Failed to authenticate with CrowdStrike API")
+        return {
+            'Authorization': f'Bearer {self.token}',
+            'Content-Type': 'application/json'
+        }
+    
+    def get_aid_from_hostname(self, hostname: str) -> str:
+        """Get AID from hostname"""
+        try:
+            # Search for hostname
+            url = f"{self.base_url}/devices/queries/devices/v1"
+            params = {'filter': f"hostname:'{hostname}'"}
+            
+            response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'resources' in data and data['resources']:
+                    aid = data['resources'][0]
+                    return aid
+                else:
+                    return None
+            else:
+                print(f"API error: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            print(f"Hostname lookup error: {e}")
+            return None
+
+def construct_investigation_url(aid: str, days: str) -> str:
+    """Construct the investigation URL with AID and lookback days"""
+    if not days.endswith('d'):
+        days = f"{days}d"
+    
+    query_part = f"{aid} | timestamp_utc := formatTime(\"%F %T.%L\", timezone=UTC ,field=@timestamp, unit=milliseconds)"
+    encoded_query = requests.utils.quote(query_part)
+    encoded_timezone = requests.utils.quote("Etc/UTC")
+    
+    url = (f"https://falcon.crowdstrike.com/investigate/search?"
+           f"end=&query={encoded_query}&repo=all&searchViewInteractions=NoXSA&"
+           f"start={days}&timezone={encoded_timezone}")
+    
+    return url
+
+def setup_configuration():
+    """Handle initial configuration setup"""
+    config_manager = SecureConfigManager()
+    
+    print("=== FalconAID Initial Setup ===")
+    print("\nThis tool uses your system's secure credential storage.")
+    print("A unique encryption key will be generated based on your system identity.")
+    
+    # Optional: Add an additional user secret for extra security
+    use_secret = input("\nAdd an additional security passphrase? (y/n, n recommended): ").strip().lower()
+    user_secret = None
+    
+    if use_secret in ['y', 'yes']:
+        while True:
+            secret1 = getpass.getpass("Enter security passphrase: ")
+            secret2 = getpass.getpass("Confirm passphrase: ")
+            if secret1 == secret2:
+                if len(secret1) >= 8:
+                    user_secret = secret1
+                    print("[+] Additional security passphrase configured")
+                    break
+                else:
+                    print("Passphrase must be at least 8 characters")
+            else:
+                print("Passphrases don't match. Try again.")
+    
+    print("\n=== CrowdStrike API Configuration ===")
+    client_id = input("Enter Client ID: ").strip()
+    client_secret = input("Enter Client Secret: ").strip()
+    base_url = input("Enter Base URL (e.g., https://api.crowdstrike.com): ").strip()
+    
+    config = {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'base_url': base_url
+    }
+    
+    if config_manager.save_config(config, user_secret):
+        print("[+] Configuration securely stored in system keyring")
+        return config_manager, user_secret
+    else:
+        print("[!] Failed to save configuration")
+        return None, None
+
+def load_configuration():
+    """Load existing configuration with optional secret"""
+    config_manager = SecureConfigManager()
+    
+    if not config_manager.config_exists():
+        print("[!] No configuration found. Please run setup first.")
+        return None, None
+    
+    # Try to load without secret first
+    config = config_manager.load_config()
+    
+    if config is None:
+        # If decryption failed, prompt for secret
+        print("[*] Configuration requires security passphrase")
+        user_secret = getpass.getpass("Enter your security passphrase: ")
+        config = config_manager.load_config(user_secret)
+        
+        if config is None:
+            print("[!] Invalid passphrase or corrupted configuration")
+            return None, None
+    
+    return config_manager, config
+
+def main():
+    """Main execution function"""
+    print("""
+    ╔═══════════════════════════════════════════════╗
+    ║              FalconAID Tool                   ║
+    ║      Secure CrowdStrike Investigator          ║
+    ╚═══════════════════════════════════════════════╝
+    """)
+    
+    # Check if configuration exists
+    config_manager = SecureConfigManager()
+    
+    if not config_manager.config_exists():
+        print("[*] First-time setup required")
+        config_manager, user_secret = setup_configuration()
+        if not config_manager:
+            sys.exit(1)
+    else:
+        config_manager, config = load_configuration()
+        if not config:
+            sys.exit(1)
+        user_secret = None  # Already handled in load_configuration
+    
+    # Load final config
+    config = config_manager.load_config(user_secret)
+    if not config:
+        print("[!] Failed to load configuration")
+        sys.exit(1)
+    
+    # Initialize API
+    api = CrowdStrikeAPI(config['client_id'], config['client_secret'], config['base_url'])
+    
+    # Validate credentials
+    print("\n[*] Validating credentials...")
+    if api.authenticate():
+        print("[✓] Credentials valid\n")
+    else:
+        print("[✗] Invalid credentials. Configuration may be corrupted.")
+        reset = input("Reset configuration? (y/n): ").strip().lower()
+        if reset in ['y', 'yes']:
+            config_manager.clear_config()
+            print("[+] Configuration cleared. Please restart the tool.")
+        sys.exit(1)
+    
+    # Get hostname from user
+    hostname = input("Enter hostname: ").strip()
+    
+    if not hostname:
+        print("[!] Hostname cannot be empty")
+        sys.exit(1)
+    
+    print(f"[*] Looking up AID for hostname: {hostname}")
+    
+    # Get AID
+    aid = api.get_aid_from_hostname(hostname)
+    
+    if aid:
+        print(f"\n[✓] AID found: {aid}")
+        
+        # Ask for lookback days
+        print("\n[*] Investigation URL Setup")
+        days = input("Enter number of days to look back (e.g., 30): ").strip()
+        
+        if not days:
+            print("[!] Days cannot be empty")
+            sys.exit(1)
+        
+        # Construct and display URL
+        investigation_url = construct_investigation_url(aid, days)
+        print(f"\n[✓] Investigation URL constructed:")
+        print(f"    {investigation_url}")
+        
+        # Ask user if they want to open the URL
+        open_browser = input("\nOpen in web browser? (y/n): ").strip().lower()
+        
+        if open_browser in ['y', 'yes']:
+            print("[*] Opening web browser...")
+            webbrowser.open(investigation_url)
+            print("[✓] Browser opened successfully")
+        
+        return aid
+    else:
+        print(f"\n[✗] No AID found for hostname: {hostname}")
+        return None
+
+if __name__ == "__main__":
+    try:
+        result = main()
+        sys.exit(0 if result else 1)
+    except KeyboardInterrupt:
+        print("\n[!] Operation cancelled by user")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n[!] Unexpected error: {e}")
+        sys.exit(1)
