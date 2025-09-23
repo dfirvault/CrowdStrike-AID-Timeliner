@@ -1,3 +1,6 @@
+
+![CrowdStrikeAIDTimeliner](https://github.com/user-attachments/assets/ab8d2994-6ff8-4288-a9c5-f28eb12a2d63)
+
 # CrowdStrike-AID-Timeliner - CrowdStrike Device Investigator
 
 A secure tool for quickly looking up CrowdStrike Agent IDs (AIDs) from hostnames and generating direct investigation links.
