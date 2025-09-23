@@ -1,4 +1,4 @@
-# FalconAID - CrowdStrike Device Investigator
+# CrowdStrike-AID-Timeliner - CrowdStrike Device Investigator
 
 A secure tool for quickly looking up CrowdStrike Agent IDs (AIDs) from hostnames and generating direct investigation links.
 
