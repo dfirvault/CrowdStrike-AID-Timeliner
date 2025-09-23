@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FalconAID - CrowdStrike Device Investigator
+CrowdStrikeAIDTimeliner - CrowdStrike Device Investigator
 Secure AID lookup tool with system keyring storage
 """
 
