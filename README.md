@@ -7,6 +7,8 @@
 
 A secure tool for quickly looking up CrowdStrike Agent IDs (AIDs) from hostnames and generating direct investigation links.
 
+This is version 0.1, just a simple timeliner, the next phase will have automated RTR functionality for extracting forensics evidence from the target.
+
 ## Features
 
 - 🔒 **Secure credential storage** using system keyring
