@@ -41,19 +41,19 @@ Enter lookback days: 30
 - Generate a direct investigation URL
 - Optionally open it in your browser
 
-####API Requirements
-- CrowdStrike Falcon API credentials with Device Read permissions
+### API Requirements
+- CrowdStrike Falcon API credentials with **Device Read** permissions
 - Base URL for your region (US, EU, US-GOV-1)
 
-###Security
+### Security
 - Credentials encrypted using system-specific keys
 - Optional additional passphrase protection
 - No credentials stored in plaintext
 
-Support
+### Support
 Developer: Jacob Wilson
 Email: dfirvault@gmail.com
 
-License
+### License
 See LICENSE file for details.
 
